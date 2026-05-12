@@ -1,5 +1,6 @@
 const Booking = require('../models/Booking');
 const Show = require('../models/Show');
+
 // Helper function to save with retry on version error
 const saveWithRetry = async (doc, retries = 5) => {
   for (let i = 0; i < retries; i++) {
@@ -9,9 +10,16 @@ const saveWithRetry = async (doc, retries = 5) => {
       return true;
     } catch (error) {
       if (error.name === 'VersionError') {
-        console.log(`⚠️ Version conflict on attempt ${i + 1}/${retries}, reloading...`);
-        // Refresh the document from database
-        await doc.reload();
+        console.log(`⚠️ Version conflict on attempt ${i + 1}/${retries}, refreshing document...`);
+        // Refresh the document from database using findById
+        const freshDoc = await Show.findById(doc._id);
+        if (!freshDoc) {
+          throw new Error('Document no longer exists');
+        }
+        // Update the original document with fresh data
+        doc.temporaryHolds = freshDoc.temporaryHolds;
+        doc.bookedSeats = freshDoc.bookedSeats;
+        doc.__v = freshDoc.__v;
         continue;
       }
       throw error;
@@ -20,7 +28,7 @@ const saveWithRetry = async (doc, retries = 5) => {
   console.error(`❌ Failed to save after ${retries} attempts`);
   return false;
 };
-// Hold seats for 5 minutes
+
 // Hold seats for 5 minutes
 const holdSeats = async (req, res) => {
   try {
@@ -124,12 +132,11 @@ const createBooking = async (req, res) => {
     const { showId, seats } = req.body;
     const userId = req.user.id;
     
-    console.log('\n========== CREATE BOOKING REQUEST ==========');
-    console.log('showId:', showId);
-    console.log('seats:', seats);
-    console.log('userId:', userId);
+    if (!showId || !seats || seats.length === 0) {
+      return res.status(400).json({ success: false, message: 'Show ID and seats are required' });
+    }
     
-    const show = await Show.findById(showId);
+    let show = await Show.findById(showId);
     if (!show) {
       return res.status(404).json({ success: false, message: 'Show not found' });
     }
@@ -137,22 +144,20 @@ const createBooking = async (req, res) => {
     const now = new Date();
     
     // Clean expired holds
-    show.temporaryHolds = (show.temporaryHolds || []).filter(hold => new Date(hold.expiresAt) > now);
+    if (show.temporaryHolds) {
+      show.temporaryHolds = show.temporaryHolds.filter(hold => new Date(hold.expiresAt) > now);
+    }
     
-    console.log('Current BOOKED seats:', show.bookedSeats);
-    console.log('Current ACTIVE HOLDS:', show.temporaryHolds.map(h => ({ seat: h.seatNumber, user: h.userId })));
-    
-    // CHECK 1: Seats already BOOKED?
+    // Check if seats are already booked
     const alreadyBooked = seats.filter(seat => (show.bookedSeats || []).includes(seat));
     if (alreadyBooked.length > 0) {
-      console.log('❌ FAILED: Seats already BOOKED:', alreadyBooked);
       return res.status(400).json({ 
         success: false, 
         message: `Seats ${alreadyBooked.join(', ')} are already booked!` 
       });
     }
     
-    // CHECK 2: Seats are on HOLD for THIS user?
+    // Check if seats are on hold for this user
     const notHeldByUser = seats.filter(seat => {
       const hold = (show.temporaryHolds || []).find(h => 
         h.seatNumber === seat && h.userId === userId
@@ -161,10 +166,9 @@ const createBooking = async (req, res) => {
     });
     
     if (notHeldByUser.length > 0) {
-      console.log('❌ FAILED: Seats not on hold for this user:', notHeldByUser);
       return res.status(400).json({ 
         success: false, 
-        message: `Seat hold expired for seats ${notHeldByUser.join(', ')}. Please reselect and try again.` 
+        message: `Seat hold expired for seats ${notHeldByUser.join(', ')}. Please reselect.` 
       });
     }
     
@@ -179,9 +183,7 @@ const createBooking = async (req, res) => {
       hold => !seats.includes(hold.seatNumber)
     );
     
-    await show.save();
-    console.log('✅ SUCCESS: Booking created! Seats:', seats);
-    console.log('==========================================\n');
+    await saveWithRetry(show);
     
     const booking = await Booking.create({
       userId,
@@ -191,17 +193,10 @@ const createBooking = async (req, res) => {
       bookingStatus: 'confirmed'
     });
     
-    const populatedBooking = await Booking.findById(booking._id)
-      .populate('userId', 'name email')
-      .populate({
-        path: 'showId',
-        populate: { path: 'movieId' }
-      });
-    
     res.status(201).json({
       success: true,
       message: 'Tickets booked successfully!',
-      booking: populatedBooking
+      booking: booking
     });
     
   } catch (error) {
@@ -211,20 +206,14 @@ const createBooking = async (req, res) => {
 };
 
 // Get my bookings
-// Get my bookings
 const getMyBookings = async (req, res) => {
   try {
     const bookings = await Booking.find({ userId: req.user.id, bookingStatus: 'confirmed' })
-      .populate({
-        path: 'showId',
-        populate: { path: 'movieId' }
-      })
+      .populate({ path: 'showId', populate: { path: 'movieId' } })
       .sort({ createdAt: -1 });
-    
     res.json({ success: true, data: bookings });
   } catch (error) {
-    console.error('Get my bookings error:', error);
-    res.status(500).json({ success: false, message: 'Server error', data: [] });
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
@@ -233,14 +222,10 @@ const getAllBookings = async (req, res) => {
   try {
     const bookings = await Booking.find()
       .populate('userId', 'name email')
-      .populate({
-        path: 'showId',
-        populate: { path: 'movieId' }
-      })
+      .populate({ path: 'showId', populate: { path: 'movieId' } })
       .sort({ createdAt: -1 });
     res.json({ success: true, data: bookings });
   } catch (error) {
-    console.error('Get all bookings error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -266,7 +251,6 @@ const cancelBooking = async (req, res) => {
     
     res.json({ success: true, message: 'Booking cancelled successfully' });
   } catch (error) {
-    console.error('Cancel booking error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
