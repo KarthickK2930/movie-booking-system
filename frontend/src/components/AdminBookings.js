@@ -22,23 +22,46 @@ const AdminBookings = () => {
   const fetchAllBookings = async () => {
     try {
       const response = await api.get('/bookings/admin/all');
-      setBookings(response.data);
-      setFilteredBookings(response.data);
+      console.log('Bookings API Response:', response.data);
+      
+      // Handle different response formats
+      let bookingsData = [];
+      if (response.data) {
+        if (Array.isArray(response.data)) {
+          bookingsData = response.data;
+        } else if (response.data.data && Array.isArray(response.data.data)) {
+          bookingsData = response.data.data;
+        } else if (response.data.bookings && Array.isArray(response.data.bookings)) {
+          bookingsData = response.data.bookings;
+        } else if (response.data.success && Array.isArray(response.data.data)) {
+          bookingsData = response.data.data;
+        }
+      }
+      
+      setBookings(bookingsData);
+      setFilteredBookings(bookingsData);
       setLoading(false);
     } catch (err) {
-      console.error(err);
+      console.error('Fetch bookings error:', err);
+      setBookings([]);
+      setFilteredBookings([]);
       setLoading(false);
     }
   };
 
   const applyFilters = () => {
+    if (!Array.isArray(bookings)) {
+      setFilteredBookings([]);
+      return;
+    }
+    
     let filtered = [...bookings];
     
     if (filterDate) {
-      filtered = filtered.filter(b => b.showId?.showDate === filterDate);
+      filtered = filtered.filter(b => b.showId?.date === filterDate || b.showId?.showDate === filterDate);
     }
     if (filterShowtime) {
-      filtered = filtered.filter(b => b.showId?.showTime === filterShowtime);
+      filtered = filtered.filter(b => b.showId?.time === filterShowtime || b.showId?.showTime === filterShowtime);
     }
     if (filterMovie) {
       filtered = filtered.filter(b => b.showId?.movieId?.title === filterMovie);
@@ -70,15 +93,18 @@ const AdminBookings = () => {
   };
 
   const getUniqueMovies = () => {
+    if (!Array.isArray(bookings)) return [];
     return [...new Set(bookings.map(b => b.showId?.movieId?.title).filter(Boolean))];
   };
 
   const getUniqueDates = () => {
-    return [...new Set(bookings.map(b => b.showId?.showDate).filter(Boolean))];
+    if (!Array.isArray(bookings)) return [];
+    return [...new Set(bookings.map(b => b.showId?.date || b.showId?.showDate).filter(Boolean))];
   };
 
   const getUniqueTimes = () => {
-    return [...new Set(bookings.map(b => b.showId?.showTime).filter(Boolean))];
+    if (!Array.isArray(bookings)) return [];
+    return [...new Set(bookings.map(b => b.showId?.time || b.showId?.showTime).filter(Boolean))];
   };
 
   const clearFilters = () => {
@@ -181,7 +207,7 @@ const AdminBookings = () => {
                 <th style={{ padding: '12px', textAlign: 'left' }}>Booking ID</th>
                 <th style={{ padding: '12px', textAlign: 'left' }}>User</th>
                 <th style={{ padding: '12px', textAlign: 'left' }}>Movie</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>Theatre / Screen</th>
+                <th style={{ padding: '12px', textAlign: 'left' }}>Theatre</th>
                 <th style={{ padding: '12px', textAlign: 'left' }}>Date & Time</th>
                 <th style={{ padding: '12px', textAlign: 'left' }}>Seats</th>
                 <th style={{ padding: '12px', textAlign: 'left' }}>Amount</th>
@@ -196,26 +222,25 @@ const AdminBookings = () => {
                   background: index % 2 === 0 ? '#f9f9f9' : 'white' 
                 }}>
                   <td style={{ padding: '10px', fontSize: '12px', fontFamily: 'monospace' }}>
-                    {booking.bookingId}
-                   </td>
+                    {booking.bookingId || booking._id?.slice(-8)}
+                  </td>
                   <td style={{ padding: '10px' }}>
-                    <strong>{booking.userId?.name}</strong><br/>
-                    <span style={{ fontSize: '11px', color: '#666' }}>{booking.userId?.email}</span>
-                   </td>
+                    <strong>{booking.userId?.name || 'N/A'}</strong><br/>
+                    <span style={{ fontSize: '11px', color: '#666' }}>{booking.userId?.email || 'N/A'}</span>
+                  </td>
                   <td style={{ padding: '10px' }}>
-                    <strong>{booking.showId?.movieId?.title}</strong>
-                   </td>
+                    <strong>{booking.showId?.movieId?.title || 'N/A'}</strong>
+                  </td>
                   <td style={{ padding: '10px' }}>
-                    {booking.showId?.screenId?.name}<br/>
-                    <span style={{ fontSize: '11px', color: '#666' }}>{booking.showId?.screenId?.name}</span>
-                   </td>
+                    {booking.showId?.theatreName || 'Main Theatre'}
+                  </td>
                   <td style={{ padding: '10px' }}>
-                    {booking.showId?.showDate}<br/>
-                    <span style={{ fontSize: '11px', color: '#666' }}>{booking.showId?.showTime}</span>
-                   </td>
+                    {booking.showId?.date || booking.showId?.showDate}<br/>
+                    <span style={{ fontSize: '11px', color: '#666' }}>{booking.showId?.time || booking.showId?.showTime}</span>
+                  </td>
                   <td style={{ padding: '10px', fontSize: '14px', fontWeight: 'bold', color: '#e50914' }}>
                     {booking.seats?.join(', ')}
-                   </td>
+                  </td>
                   <td style={{ padding: '10px', fontWeight: 'bold' }}>₹{booking.totalPrice}</td>
                   <td style={{ padding: '10px' }}>{getStatusBadge(booking.bookingStatus)}</td>
                   <td style={{ padding: '10px' }}>
@@ -235,11 +260,11 @@ const AdminBookings = () => {
                         Cancel
                       </button>
                     )}
-                   </td>
-                 </tr>
+                  </td>
+                </tr>
               ))}
             </tbody>
-           </table>
+          </table>
         </div>
       )}
     </div>
