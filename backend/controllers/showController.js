@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Show = require('../models/Show');
 const Movie = require('../models/Movie');
 
@@ -38,9 +39,17 @@ const getAvailableDates = async (req, res) => {
 };
 
 // Get single show by ID
+// Get single show by ID
 const getShowById = async (req, res) => {
   try {
-    const show = await Show.findById(req.params.id).populate('movieId');
+    const { id } = req.params;
+    
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid show ID format' });
+    }
+    
+    const show = await Show.findById(id).populate('movieId');
     if (!show) {
       return res.status(404).json({ success: false, message: 'Show not found' });
     }
