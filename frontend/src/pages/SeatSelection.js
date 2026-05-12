@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';  // FIXED: removed extra }
+import { useParams, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useTimer } from '../context/TimerContext';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -70,7 +70,7 @@ const SeatSelection = () => {
     timerRef.current = timer;
   }, [clearHold]);
 
-  // Hold seats (moved BEFORE fetchShowDetails)
+  // Hold seats
   const holdSeats = useCallback(async (seatsToHold) => {
     try {
       if (!checkAuth()) return false;
@@ -139,36 +139,25 @@ const SeatSelection = () => {
       
       setShow(showData);
 
-      // Restore selected seats
-      if (activeHold && activeHold.showId === showId && activeHold.seats && activeHold.seats.length > 0) {
+      // Restore selected seats - ONLY from backend holds
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const now = new Date();
+      const userHolds = (showData.temporaryHolds || []).filter(h => 
+        h.userId === user.id && new Date(h.expiresAt) > now
+      );
+      const backendHeldSeats = userHolds.map(h => h.seatNumber);
+      
+      if (backendHeldSeats.length > 0) {
+        console.log('🔄 Restoring seats from backend:', backendHeldSeats);
+        setSelectedSeats(backendHeldSeats);
+        if (userHolds[0]?.expiresAt) {
+          setHold(showId, showData, backendHeldSeats, new Date(userHolds[0].expiresAt));
+        }
+      } else if (activeHold && activeHold.showId === showId && activeHold.seats?.length > 0) {
         console.log('🔄 Restoring seats from activeHold:', activeHold.seats);
         setSelectedSeats(activeHold.seats);
-        
-        const user = JSON.parse(localStorage.getItem('user') || '{}');
-        const now = new Date();
-        const userHolds = (showData.temporaryHolds || []).filter(h => 
-          h.userId === user.id && new Date(h.expiresAt) > now
-        );
-        
-        if (userHolds.length === 0 && activeHold.seats.length > 0) {
-          console.log('Backend missing holds, refreshing...');
-          await holdSeats(activeHold.seats);
-        }
       } else {
-        const user = JSON.parse(localStorage.getItem('user') || '{}');
-        const now = new Date();
-        const userHolds = (showData.temporaryHolds || []).filter(h => 
-          h.userId === user.id && new Date(h.expiresAt) > now
-        );
-        const backendHeldSeats = userHolds.map(h => h.seatNumber);
-        
-        if (backendHeldSeats.length > 0) {
-          console.log('🔄 Restoring seats from backend:', backendHeldSeats);
-          setSelectedSeats(backendHeldSeats);
-          setHold(showId, showData, backendHeldSeats, new Date(userHolds[0].expiresAt));
-        } else {
-          setSelectedSeats([]);
-        }
+        setSelectedSeats([]);
       }
 
       setLoading(false);
@@ -188,24 +177,44 @@ const SeatSelection = () => {
       }
       setLoading(false);
     }
-  }, [showId, activeHold, checkAuth, isValidShowId, navigate, setHold, holdSeats]);
+  }, [showId, activeHold, checkAuth, isValidShowId, navigate, setHold]);
 
   useEffect(() => {
     fetchShowDetails();
   }, [fetchShowDetails]);
 
-  // Auto-refresh seats every 3 seconds
+  // Auto-refresh seats every 3 seconds - PRESERVE SELECTED SEATS
   useEffect(() => {
     if (!showId || !checkAuth()) return;
     
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       if (!processing) {
-        api.get(`/shows/${showId}`).then(response => {
+        try {
+          const response = await api.get(`/shows/${showId}`);
           const showData = response.data?.data || response.data;
+          
           if (showData && showData._id) {
+            // Get current user's holds from backend
+            const user = JSON.parse(localStorage.getItem('user') || '{}');
+            const now = new Date();
+            const userHolds = (showData.temporaryHolds || []).filter(h => 
+              h.userId === user.id && new Date(h.expiresAt) > now
+            );
+            const backendHeldSeats = userHolds.map(h => h.seatNumber);
+            
+            // Only update selected seats if they've changed on backend
+            const currentSelectedStr = JSON.stringify([...selectedSeats].sort());
+            const backendHeldStr = JSON.stringify([...backendHeldSeats].sort());
+            
+            if (currentSelectedStr !== backendHeldStr) {
+              console.log('🔄 Syncing selected seats with backend:', backendHeldSeats);
+              setSelectedSeats(backendHeldSeats);
+            }
+            
+            // Always update show data
             setShow(showData);
           }
-        }).catch(err => {
+        } catch (err) {
           console.error('Refresh error:', err);
           if (err.response?.status === 401) {
             clearInterval(interval);
@@ -214,12 +223,12 @@ const SeatSelection = () => {
             localStorage.removeItem('user');
             navigate('/login');
           }
-        });
+        }
       }
     }, 3000);
     
     return () => clearInterval(interval);
-  }, [showId, processing, navigate, checkAuth]);
+  }, [showId, processing, navigate, checkAuth, selectedSeats]);
 
   const toggleSeat = async (seatNumber) => {
     if (!show || processing) return;
@@ -450,4 +459,4 @@ const SeatSelection = () => {
   );
 };
 
-export default SeatSelection;
+export default SeatSelection; 
