@@ -12,6 +12,37 @@ const MovieDetails = () => {
   const [selectedDate, setSelectedDate] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // Helper function to convert time string to sortable number
+  const convertTimeToNumber = (timeStr) => {
+    if (!timeStr) return 0;
+    
+    // Handle formats like "10:00 AM", "1:00 PM", "9:00 AM"
+    const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (match) {
+      let hours = parseInt(match[1]);
+      const minutes = parseInt(match[2]);
+      const ampm = match[3].toUpperCase();
+      
+      if (ampm === 'PM' && hours !== 12) {
+        hours += 12;
+      }
+      if (ampm === 'AM' && hours === 12) {
+        hours = 0;
+      }
+      return hours * 60 + minutes;
+    }
+    return 0;
+  };
+
+  // Sort shows by time
+  const sortShowsByTime = (showsArray) => {
+    return [...showsArray].sort((a, b) => {
+      const timeA = convertTimeToNumber(a.time);
+      const timeB = convertTimeToNumber(b.time);
+      return timeA - timeB;
+    });
+  };
+
   useEffect(() => {
     fetchMovieAndDates();
   }, [id]);
@@ -49,7 +80,11 @@ const MovieDetails = () => {
     try {
       const response = await api.get(`/shows/movie/${id}/date/${date}`);
       const showsData = response.data?.data || response.data || [];
-      setShows(Array.isArray(showsData) ? showsData : []);
+      const showsArray = Array.isArray(showsData) ? showsData : [];
+      
+      // Sort shows by time
+      const sortedShows = sortShowsByTime(showsArray);
+      setShows(sortedShows);
     } catch (err) {
       console.error('Error fetching shows:', err);
       setShows([]);
@@ -69,6 +104,27 @@ const MovieDetails = () => {
       date: date.getDate(),
       month: months[date.getMonth()]
     };
+  };
+
+  // Format time display (ensure consistent AM/PM format)
+  const formatTimeDisplay = (timeStr) => {
+    if (!timeStr) return 'N/A';
+    
+    // If time already has AM/PM, return as is
+    if (timeStr.includes('AM') || timeStr.includes('PM')) {
+      return timeStr;
+    }
+    
+    // Convert 24-hour format to 12-hour format with AM/PM
+    const match = timeStr.match(/(\d+):(\d+)/);
+    if (match) {
+      let hours = parseInt(match[1]);
+      const minutes = match[2];
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12 || 12;
+      return `${hours}:${minutes} ${ampm}`;
+    }
+    return timeStr;
   };
 
   if (loading) return <LoadingSpinner />;
@@ -139,7 +195,7 @@ const MovieDetails = () => {
               background: 'white',
               boxShadow: '0 2px 5px rgba(0,0,0,0.1)'
             }}>
-              <p><strong>🕐 {show.time}</strong></p>
+              <p><strong>🕐 {formatTimeDisplay(show.time)}</strong></p>
               <p>🎭 {show.theatreName || 'Main Theatre'}</p>
               <p>💰 ₹{show.price || 150}</p>
               <p style={{ fontSize: '12px', color: '#28a745' }}>
