@@ -27,7 +27,6 @@ const SeatSelection = () => {
       return false;
     }
     
-    // Set token in api headers if not already set
     if (api.defaults.headers.common['Authorization'] !== `Bearer ${token}`) {
       api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
     }
@@ -35,95 +34,19 @@ const SeatSelection = () => {
     return true;
   }, [navigate]);
 
-  const fetchShowDetails = useCallback(async () => {
-  try {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      navigate('/login');
-      return;
+  // Validate showId
+  const isValidShowId = useCallback(() => {
+    if (!showId || showId.length !== 24 || !/^[a-fA-F0-9]{24}$/.test(showId)) {
+      console.error('Invalid showId:', showId);
+      alert('Invalid show ID. Redirecting to home page.');
+      navigate('/');
+      return false;
     }
+    return true;
+  }, [showId, navigate]);
 
-    const response = await api.get(`/shows/${showId}`);
-    const showData = response.data?.data || response.data;
-    setShow(showData);
-
-    // IMPORTANT: Check activeHold FIRST to restore seats
-    if (activeHold && activeHold.showId === showId && activeHold.seats && activeHold.seats.length > 0) {
-      console.log('🔄 Restoring seats from activeHold:', activeHold.seats);
-      setSelectedSeats(activeHold.seats);
-      
-      // Also verify with backend
-      const user = JSON.parse(localStorage.getItem('user') || '{}');
-      const now = new Date();
-      const userHolds = (showData.temporaryHolds || []).filter(h => 
-        h.userId === user.id && new Date(h.expiresAt) > now
-      );
-      
-      if (userHolds.length === 0 && activeHold.seats.length > 0) {
-        // Backend doesn't have holds, refresh them
-        console.log('Backend missing holds, refreshing...');
-        await holdSeats(activeHold.seats);
-      }
-    } else {
-      // No activeHold, check backend
-      const user = JSON.parse(localStorage.getItem('user') || '{}');
-      const now = new Date();
-      const userHolds = (showData.temporaryHolds || []).filter(h => 
-        h.userId === user.id && new Date(h.expiresAt) > now
-      );
-      const backendHeldSeats = userHolds.map(h => h.seatNumber);
-      
-      if (backendHeldSeats.length > 0) {
-        console.log('🔄 Restoring seats from backend:', backendHeldSeats);
-        setSelectedSeats(backendHeldSeats);
-        setHold(showId, showData, backendHeldSeats, new Date(userHolds[0].expiresAt));
-      } else {
-        setSelectedSeats([]);
-      }
-    }
-
-    setLoading(false);
-  } catch (err) {
-    console.error('Error fetching show:', err);
-    if (err.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      navigate('/login');
-    }
-    setLoading(false);
-  }
-}, [showId, activeHold, setHold, navigate]);
-
-  useEffect(() => {
-    fetchShowDetails();
-  }, [fetchShowDetails]);
-
-  // Auto-refresh seats every 3 seconds
-  useEffect(() => {
-    if (!showId || !checkAuth()) return;
-    
-    const interval = setInterval(() => {
-      if (!processing) {
-        api.get(`/shows/${showId}`).then(response => {
-          const showData = response.data?.data || response.data;
-          setShow(showData);
-        }).catch(err => {
-          console.error('Refresh error:', err);
-          if (err.response?.status === 401) {
-            clearInterval(interval);
-            alert('Session expired. Please login again.');
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-            navigate('/login');
-          }
-        });
-      }
-    }, 3000);
-    
-    return () => clearInterval(interval);
-  }, [showId, processing, navigate, checkAuth]);
-
-  const startTimer = (expiresAt) => {
+  // Start timer
+  const startTimer = useCallback((expiresAt) => {
     if (timerRef.current) clearInterval(timerRef.current);
     
     const timer = setInterval(() => {
@@ -145,9 +68,10 @@ const SeatSelection = () => {
     }, 1000);
     
     timerRef.current = timer;
-  };
+  }, [clearHold]);
 
-  const holdSeats = async (seatsToHold) => {
+  // Hold seats
+  const holdSeats = useCallback(async (seatsToHold) => {
     try {
       if (!checkAuth()) return false;
       
@@ -157,7 +81,6 @@ const SeatSelection = () => {
         console.log('Releasing all holds');
         await api.post('/bookings/hold', { showId, seats: [] });
         
-        // Clear timer and popup
         if (timerRef.current) {
           clearInterval(timerRef.current);
           timerRef.current = null;
@@ -165,8 +88,6 @@ const SeatSelection = () => {
         setTimeLeft(0);
         setShowTimerPopup(false);
         clearHold();
-        
-        // Refresh show data to update UI
         await fetchShowDetails();
         return true;
       }
@@ -180,8 +101,6 @@ const SeatSelection = () => {
       setTimeout(() => setShowTimerPopup(false), 3000);
       
       setHold(showId, show, seatsToHold, expiresAt);
-      
-      // Refresh show data to get updated holds
       await fetchShowDetails();
       return true;
     } catch (err) {
@@ -196,12 +115,98 @@ const SeatSelection = () => {
       }
       return false;
     }
-  };
+  }, [showId, show, checkAuth, startTimer, clearHold, setHold, navigate]);
+
+  // Fetch show details
+  const fetchShowDetails = useCallback(async () => {
+    try {
+      if (!checkAuth()) return;
+      if (!isValidShowId()) return;
+      
+      console.log('Fetching show with ID:', showId);
+      
+      const response = await api.get(`/shows/${showId}`);
+      const showData = response.data?.data || response.data;
+      
+      if (!showData || !showData._id) {
+        console.error('Invalid show data:', showData);
+        alert('Show not found. Please go back and select a valid show.');
+        navigate('/');
+        return;
+      }
+      
+      // Restore selected seats from backend holds (only on initial load)
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const now = new Date();
+      const userHolds = (showData.temporaryHolds || []).filter(h => 
+        h.userId === user.id && new Date(h.expiresAt) > now
+      );
+      const backendHeldSeats = userHolds.map(h => h.seatNumber);
+      
+      if (backendHeldSeats.length > 0 && selectedSeats.length === 0) {
+        console.log('🔄 Restoring seats from backend:', backendHeldSeats);
+        setSelectedSeats(backendHeldSeats);
+        if (userHolds[0]?.expiresAt) {
+          setHold(showId, showData, backendHeldSeats, new Date(userHolds[0].expiresAt));
+        }
+      }
+      
+      setShow(showData);
+      setLoading(false);
+    } catch (err) {
+      console.error('Error fetching show:', err);
+      if (err.response?.status === 404) {
+        alert('Show not found. Please go back and select a valid show.');
+        navigate('/');
+      } else if (err.response?.status === 401) {
+        alert('Session expired. Please login again.');
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        navigate('/login');
+      } else {
+        alert('Failed to load show details. Please try again.');
+      }
+      setLoading(false);
+    }
+  }, [showId, checkAuth, isValidShowId, navigate, setHold, selectedSeats.length]);
+
+  useEffect(() => {
+    fetchShowDetails();
+  }, [fetchShowDetails]);
+
+  // Auto-refresh seats every 3 seconds - READ ONLY (does NOT modify selected seats)
+  useEffect(() => {
+    if (!showId || !checkAuth()) return;
+    
+    const interval = setInterval(async () => {
+      if (!processing) {
+        try {
+          const response = await api.get(`/shows/${showId}`);
+          const showData = response.data?.data || response.data;
+          
+          if (showData && showData._id) {
+            // ONLY update show data, NEVER modify selectedSeats
+            setShow(showData);
+          }
+        } catch (err) {
+          console.error('Refresh error:', err);
+          if (err.response?.status === 401) {
+            clearInterval(interval);
+            alert('Session expired. Please login again.');
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            navigate('/login');
+          }
+        }
+      }
+    }, 3000);
+    
+    return () => clearInterval(interval);
+  }, [showId, processing, navigate, checkAuth]);
 
   const toggleSeat = async (seatNumber) => {
     if (!show || processing) return;
     
-    // Check if seat is already booked
     if (show.bookedSeats?.includes(seatNumber)) {
       alert('This seat is already booked!');
       return;
@@ -211,7 +216,6 @@ const SeatSelection = () => {
     const now = new Date();
     const activeHolds = show.temporaryHolds?.filter(h => new Date(h.expiresAt) > now) || [];
     
-    // Check if seat is held by other users
     const heldByOther = activeHolds.some(h => h.seatNumber === seatNumber && h.userId !== user.id);
     if (heldByOther) {
       alert('This seat is currently being selected by another user.');
@@ -221,15 +225,11 @@ const SeatSelection = () => {
     let newSelectedSeats;
     
     if (selectedSeats.includes(seatNumber)) {
-      // DESELECT: Remove this seat
       newSelectedSeats = selectedSeats.filter(s => s !== seatNumber);
       console.log('Deselecting seat', seatNumber, 'New selection:', newSelectedSeats);
-      
-      // Update UI immediately
       setSelectedSeats(newSelectedSeats);
       
       if (newSelectedSeats.length === 0) {
-        // No seats left - RELEASE ALL HOLDS
         console.log('No seats left, releasing all holds');
         clearHold();
         if (timerRef.current) {
@@ -240,12 +240,9 @@ const SeatSelection = () => {
         }
         await holdSeats([]);
       } else {
-        // Update hold with remaining seats - this will REPLACE all holds
         await holdSeats(newSelectedSeats);
       }
-      await fetchShowDetails();
     } else {
-      // SELECT: Add this seat
       if (selectedSeats.length >= 10) {
         alert('Maximum 10 seats per booking');
         return;
@@ -285,23 +282,22 @@ const SeatSelection = () => {
   };
 
   const confirmBooking = () => {
-  if (selectedSeats.length === 0) {
-    alert('Please select seats');
-    return;
-  }
-  
-  const price = show.pricePerSeat || show.price || 150;
-  const totalAmount = selectedSeats.length * price;
-  
-  // Navigate to confirmation page
-  navigate('/booking-confirm', {
-    state: {
-      show: show,
-      selectedSeats: selectedSeats,
-      totalAmount: totalAmount
+    if (selectedSeats.length === 0) {
+      alert('Please select seats');
+      return;
     }
-  });
-};
+    
+    const price = show.pricePerSeat || show.price || 150;
+    const totalAmount = selectedSeats.length * price;
+    
+    navigate('/booking-confirm', {
+      state: {
+        show: show,
+        selectedSeats: selectedSeats,
+        totalAmount: totalAmount
+      }
+    });
+  };
 
   if (loading) return <LoadingSpinner />;
   if (!show) return <div style={{ textAlign: 'center', padding: 50 }}>Show not found</div>;
