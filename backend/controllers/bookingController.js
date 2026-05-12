@@ -17,72 +17,61 @@ const holdSeats = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Show ID is required' });
     }
     
-    const show = await Show.findById(showId);
+    let show = await Show.findById(showId);
     if (!show) {
+      console.log('Show not found:', showId);
       return res.status(404).json({ success: false, message: 'Show not found' });
     }
     
     const now = new Date();
     
-    // Clean expired holds first
-    show.temporaryHolds = (show.temporaryHolds || []).filter(hold => new Date(hold.expiresAt) > now);
+    // Initialize arrays if they don't exist
+    if (!show.temporaryHolds) show.temporaryHolds = [];
+    if (!show.bookedSeats) show.bookedSeats = [];
     
-    // CASE 1: If seats is empty array, RELEASE ALL holds for this user
+    // Clean expired holds
+    const beforeCount = show.temporaryHolds.length;
+    show.temporaryHolds = show.temporaryHolds.filter(hold => new Date(hold.expiresAt) > now);
+    console.log(`Cleaned ${beforeCount - show.temporaryHolds.length} expired holds`);
+    
+    // CASE 1: Release all holds
     if (!seats || seats.length === 0) {
-      console.log('RELEASING all holds for user:', userId);
-      
-      // Remove all holds belonging to this user
-      const beforeCount = show.temporaryHolds.length;
-      show.temporaryHolds = (show.temporaryHolds || []).filter(hold => hold.userId !== userId);
-      const afterCount = show.temporaryHolds.length;
-      
-      console.log(`Released ${beforeCount - afterCount} holds for user ${userId}`);
-      await show.save();
-      
-      const updatedShow = await Show.findById(showId);
-      return res.json({ 
-        success: true,
-        message: 'All seats released successfully',
-        heldSeats: [],
-        show: updatedShow
-      });
+      console.log('Releasing all holds for user:', userId);
+      show.temporaryHolds = show.temporaryHolds.filter(hold => hold.userId !== userId);
+      await saveWithRetry(show);
+      return res.json({ success: true, message: 'All seats released', heldSeats: [] });
     }
     
-    // CASE 2: Update holds - REPLACE all holds for this user with new seats
-    console.log('Current BOOKED seats:', show.bookedSeats);
-    console.log('Current ACTIVE HOLDS BEFORE:', JSON.stringify(show.temporaryHolds.map(h => ({ seat: h.seatNumber, user: h.userId })), null, 2));
-    
     // Check if seats are already BOOKED
-    const alreadyBooked = seats.filter(seat => (show.bookedSeats || []).includes(seat));
+    const alreadyBooked = seats.filter(seat => show.bookedSeats.includes(seat));
     if (alreadyBooked.length > 0) {
-      console.log('❌ FAILED: Seats already BOOKED:', alreadyBooked);
+      console.log('❌ Seats already BOOKED:', alreadyBooked);
       return res.status(400).json({ 
         success: false, 
         message: `Seats ${alreadyBooked.join(', ')} are already booked!` 
       });
     }
     
-    // Check if seats are on HOLD by OTHER users (excluding current user)
-    const heldByOthers = [];
-    for (const seat of seats) {
+    // Check if seats are on HOLD by OTHER users
+    const heldByOthers = seats.filter(seat => {
       const hold = show.temporaryHolds.find(h => h.seatNumber === seat && h.userId !== userId);
-      if (hold) {
-        heldByOthers.push(seat);
-      }
-    }
+      return !!hold;
+    });
     
     if (heldByOthers.length > 0) {
-      console.log('❌ FAILED: Seats on HOLD by OTHER users:', heldByOthers);
+      console.log('❌ Seats HELD by others:', heldByOthers);
       return res.status(400).json({ 
         success: false, 
-        message: `Seats ${heldByOthers.join(', ')} are currently being booked by another user.` 
+        message: `Seats ${heldByOthers.join(', ')} are being booked by another user.` 
       });
     }
     
-    // IMPORTANT: Remove ALL holds for THIS user first (replace, not merge)
-    show.temporaryHolds = (show.temporaryHolds || []).filter(hold => hold.userId !== userId);
+    // Remove existing holds for these seats from THIS user
+    show.temporaryHolds = show.temporaryHolds.filter(
+      hold => !(seats.includes(hold.seatNumber) && hold.userId === userId)
+    );
     
-    // Add new holds for requested seats (5 minutes = 300000 ms)
+    // Add new holds (5 minutes)
     const expiresAt = new Date(Date.now() + 300000);
     seats.forEach(seat => {
       show.temporaryHolds.push({
@@ -92,20 +81,16 @@ const holdSeats = async (req, res) => {
       });
     });
     
-    await show.save();
+    await saveWithRetry(show);
     
-    console.log('Current ACTIVE HOLDS AFTER:', JSON.stringify(show.temporaryHolds.map(h => ({ seat: h.seatNumber, user: h.userId })), null, 2));
     console.log('✅ SUCCESS: Seats HELD for user', userId, 'seats:', seats);
     console.log('==========================================\n');
-    
-    const updatedShow = await Show.findById(showId);
     
     res.json({ 
       success: true,
       message: 'Seats held for 5 minutes', 
       expiresAt: expiresAt,
-      heldSeats: seats,
-      show: updatedShow
+      heldSeats: seats
     });
     
   } catch (error) {
