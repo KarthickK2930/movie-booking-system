@@ -1,6 +1,25 @@
 const Booking = require('../models/Booking');
 const Show = require('../models/Show');
-
+// Helper function to save with retry on version error
+const saveWithRetry = async (doc, retries = 5) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await doc.save();
+      console.log(`✅ Save successful on attempt ${i + 1}`);
+      return true;
+    } catch (error) {
+      if (error.name === 'VersionError') {
+        console.log(`⚠️ Version conflict on attempt ${i + 1}/${retries}, reloading...`);
+        // Refresh the document from database
+        await doc.reload();
+        continue;
+      }
+      throw error;
+    }
+  }
+  console.error(`❌ Failed to save after ${retries} attempts`);
+  return false;
+};
 // Hold seats for 5 minutes
 // Hold seats for 5 minutes
 const holdSeats = async (req, res) => {
