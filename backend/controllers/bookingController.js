@@ -30,6 +30,7 @@ const saveWithRetry = async (doc, retries = 5) => {
 };
 
 // Hold seats for 5 minutes
+// Hold seats for 5 minutes
 const holdSeats = async (req, res) => {
   try {
     const { showId, seats } = req.body;
@@ -61,12 +62,34 @@ const holdSeats = async (req, res) => {
     show.temporaryHolds = show.temporaryHolds.filter(hold => new Date(hold.expiresAt) > now);
     console.log(`Cleaned ${beforeCount - show.temporaryHolds.length} expired holds`);
     
-    // CASE 1: Release all holds
+    // CASE 1: Release ALL holds for this user
     if (!seats || seats.length === 0) {
-      console.log('Releasing all holds for user:', userId);
+      console.log('Releasing ALL holds for user:', userId);
       show.temporaryHolds = show.temporaryHolds.filter(hold => hold.userId !== userId);
-      await saveWithRetry(show);
+      await show.save();
       return res.json({ success: true, message: 'All seats released', heldSeats: [] });
+    }
+    
+    // CASE 2: Release SPECIFIC seats (when deselecting)
+    // Check if user currently holds these seats
+    const userCurrentHolds = show.temporaryHolds.filter(hold => hold.userId === userId);
+    const userSeats = userCurrentHolds.map(h => h.seatNumber);
+    
+    // If requesting to release seats that the user currently holds
+    const seatsToRelease = seats.filter(s => userSeats.includes(s));
+    
+    if (seatsToRelease.length > 0 && seats.length === 1 && seatsToRelease.length === 1) {
+      // This is a deselection - release only this seat
+      console.log('Releasing specific seat:', seatsToRelease[0], 'for user:', userId);
+      show.temporaryHolds = show.temporaryHolds.filter(
+        hold => !(hold.seatNumber === seatsToRelease[0] && hold.userId === userId)
+      );
+      await show.save();
+      return res.json({ 
+        success: true, 
+        message: `Seat ${seatsToRelease[0]} released`, 
+        heldSeats: show.temporaryHolds.filter(h => h.userId === userId).map(h => h.seatNumber)
+      });
     }
     
     // Check if seats are already BOOKED
@@ -108,7 +131,7 @@ const holdSeats = async (req, res) => {
       });
     });
     
-    await saveWithRetry(show);
+    await show.save();
     
     console.log('✅ SUCCESS: Seats HELD for user', userId, 'seats:', seats);
     console.log('==========================================\n');

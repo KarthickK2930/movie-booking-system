@@ -205,54 +205,63 @@ const SeatSelection = () => {
   }, [showId, processing, navigate, checkAuth]);
 
   const toggleSeat = async (seatNumber) => {
-    if (!show || processing) return;
+  if (!show || processing) return;
+  
+  if (show.bookedSeats?.includes(seatNumber)) {
+    alert('This seat is already booked!');
+    return;
+  }
+  
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const now = new Date();
+  const activeHolds = show.temporaryHolds?.filter(h => new Date(h.expiresAt) > now) || [];
+  
+  const heldByOther = activeHolds.some(h => h.seatNumber === seatNumber && h.userId !== user.id);
+  if (heldByOther) {
+    alert('This seat is currently being selected by another user.');
+    return;
+  }
+  
+  let newSelectedSeats;
+  
+  if (selectedSeats.includes(seatNumber)) {
+    // DESELECT: Remove this seat - RELEASE IT IMMEDIATELY
+    newSelectedSeats = selectedSeats.filter(s => s !== seatNumber);
+    console.log('Deselecting seat', seatNumber, 'New selection:', newSelectedSeats);
     
-    if (show.bookedSeats?.includes(seatNumber)) {
-      alert('This seat is already booked!');
-      return;
-    }
+    // Update UI immediately
+    setSelectedSeats(newSelectedSeats);
     
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    const now = new Date();
-    const activeHolds = show.temporaryHolds?.filter(h => new Date(h.expiresAt) > now) || [];
-    
-    const heldByOther = activeHolds.some(h => h.seatNumber === seatNumber && h.userId !== user.id);
-    if (heldByOther) {
-      alert('This seat is currently being selected by another user.');
-      return;
-    }
-    
-    let newSelectedSeats;
-    
-    if (selectedSeats.includes(seatNumber)) {
-      newSelectedSeats = selectedSeats.filter(s => s !== seatNumber);
-      console.log('Deselecting seat', seatNumber, 'New selection:', newSelectedSeats);
-      setSelectedSeats(newSelectedSeats);
-      
-      if (newSelectedSeats.length === 0) {
-        console.log('No seats left, releasing all holds');
-        clearHold();
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-          setTimeLeft(0);
-          setShowTimerPopup(false);
-          timerRef.current = null;
-        }
-        await holdSeats([]);
-      } else {
-        await holdSeats(newSelectedSeats);
+    if (newSelectedSeats.length === 0) {
+      // No seats left - release all holds
+      console.log('No seats left, releasing all holds');
+      clearHold();
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        setTimeLeft(0);
+        setShowTimerPopup(false);
+        timerRef.current = null;
       }
+      await holdSeats([]);
     } else {
-      if (selectedSeats.length >= 10) {
-        alert('Maximum 10 seats per booking');
-        return;
-      }
-      newSelectedSeats = [...selectedSeats, seatNumber];
-      console.log('Selecting seat', seatNumber, 'New selection:', newSelectedSeats);
-      setSelectedSeats(newSelectedSeats);
+      // Release ONLY the deselected seat, keep others
+      // First, release the specific seat
+      await api.post('/bookings/hold', { showId, seats: [seatNumber] });
+      // Then update hold with remaining seats
       await holdSeats(newSelectedSeats);
     }
-  };
+  } else {
+    // SELECT: Add this seat
+    if (selectedSeats.length >= 10) {
+      alert('Maximum 10 seats per booking');
+      return;
+    }
+    newSelectedSeats = [...selectedSeats, seatNumber];
+    console.log('Selecting seat', seatNumber, 'New selection:', newSelectedSeats);
+    setSelectedSeats(newSelectedSeats);
+    await holdSeats(newSelectedSeats);
+  }
+};
 
   const getSeatStyle = (seatNumber) => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
