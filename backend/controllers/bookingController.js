@@ -2,6 +2,7 @@ const Booking = require('../models/Booking');
 const Show = require('../models/Show');
 
 // Hold seats for 5 minutes
+// Hold seats for 5 minutes
 const holdSeats = async (req, res) => {
   try {
     const { showId, seats } = req.body;
@@ -18,42 +19,38 @@ const holdSeats = async (req, res) => {
     
     const show = await Show.findById(showId);
     if (!show) {
-      console.log('Show not found:', showId);
       return res.status(404).json({ success: false, message: 'Show not found' });
     }
     
     const now = new Date();
     
-    // Clean expired holds
-    if (show.temporaryHolds) {
-      const beforeCount = show.temporaryHolds.length;
-      show.temporaryHolds = show.temporaryHolds.filter(hold => new Date(hold.expiresAt) > now);
-      console.log(`Cleaned ${beforeCount - show.temporaryHolds.length} expired holds`);
-    } else {
-      show.temporaryHolds = [];
-    }
+    // Clean expired holds first
+    show.temporaryHolds = (show.temporaryHolds || []).filter(hold => new Date(hold.expiresAt) > now);
     
     // CASE 1: If seats is empty array, RELEASE ALL holds for this user
     if (!seats || seats.length === 0) {
-      console.log('Releasing all holds for user:', userId);
+      console.log('RELEASING all holds for user:', userId);
       
+      // Remove all holds belonging to this user
       const beforeCount = show.temporaryHolds.length;
-      show.temporaryHolds = show.temporaryHolds.filter(hold => hold.userId !== userId);
+      show.temporaryHolds = (show.temporaryHolds || []).filter(hold => hold.userId !== userId);
       const afterCount = show.temporaryHolds.length;
       
       console.log(`Released ${beforeCount - afterCount} holds for user ${userId}`);
       await show.save();
       
+      const updatedShow = await Show.findById(showId);
       return res.json({ 
         success: true,
         message: 'All seats released successfully',
-        heldSeats: []
+        heldSeats: [],
+        show: updatedShow
       });
     }
     
-    // CASE 2: Normal hold - CHECK existing holds
+    // CASE 2: Update holds - REPLACE all holds for this user with new seats
     console.log('Current BOOKED seats:', show.bookedSeats);
-    console.log('Current ACTIVE HOLDS:', JSON.stringify(show.temporaryHolds.map(h => ({ seat: h.seatNumber, user: h.userId })), null, 2));
+    console.log('Current ACTIVE HOLDS BEFORE:', JSON.stringify(show.temporaryHolds.map(h => ({ seat: h.seatNumber, user: h.userId })), null, 2));
     
     // Check if seats are already BOOKED
     const alreadyBooked = seats.filter(seat => (show.bookedSeats || []).includes(seat));
@@ -65,7 +62,7 @@ const holdSeats = async (req, res) => {
       });
     }
     
-    // Check if seats are on HOLD by OTHER users
+    // Check if seats are on HOLD by OTHER users (excluding current user)
     const heldByOthers = [];
     for (const seat of seats) {
       const hold = show.temporaryHolds.find(h => h.seatNumber === seat && h.userId !== userId);
@@ -82,12 +79,10 @@ const holdSeats = async (req, res) => {
       });
     }
     
-    // Remove any existing holds for these seats from THIS user
-    show.temporaryHolds = show.temporaryHolds.filter(
-      hold => !(seats.includes(hold.seatNumber) && hold.userId === userId)
-    );
+    // IMPORTANT: Remove ALL holds for THIS user first (replace, not merge)
+    show.temporaryHolds = (show.temporaryHolds || []).filter(hold => hold.userId !== userId);
     
-    // Add new holds (5 minutes = 300000 ms)
+    // Add new holds for requested seats (5 minutes = 300000 ms)
     const expiresAt = new Date(Date.now() + 300000);
     seats.forEach(seat => {
       show.temporaryHolds.push({
@@ -101,13 +96,16 @@ const holdSeats = async (req, res) => {
     
     console.log('Current ACTIVE HOLDS AFTER:', JSON.stringify(show.temporaryHolds.map(h => ({ seat: h.seatNumber, user: h.userId })), null, 2));
     console.log('✅ SUCCESS: Seats HELD for user', userId, 'seats:', seats);
-    console.log('Expires at:', expiresAt);
+    console.log('==========================================\n');
+    
+    const updatedShow = await Show.findById(showId);
     
     res.json({ 
       success: true,
       message: 'Seats held for 5 minutes', 
       expiresAt: expiresAt,
-      heldSeats: seats
+      heldSeats: seats,
+      show: updatedShow
     });
     
   } catch (error) {
@@ -127,10 +125,6 @@ const createBooking = async (req, res) => {
     console.log('seats:', seats);
     console.log('userId:', userId);
     
-    if (!showId || !seats || seats.length === 0) {
-      return res.status(400).json({ success: false, message: 'Show ID and seats are required' });
-    }
-    
     const show = await Show.findById(showId);
     if (!show) {
       return res.status(404).json({ success: false, message: 'Show not found' });
@@ -139,33 +133,34 @@ const createBooking = async (req, res) => {
     const now = new Date();
     
     // Clean expired holds
-    if (show.temporaryHolds) {
-      show.temporaryHolds = show.temporaryHolds.filter(hold => new Date(hold.expiresAt) > now);
-    } else {
-      show.temporaryHolds = [];
-    }
+    show.temporaryHolds = (show.temporaryHolds || []).filter(hold => new Date(hold.expiresAt) > now);
     
-    // Check if seats are already booked
+    console.log('Current BOOKED seats:', show.bookedSeats);
+    console.log('Current ACTIVE HOLDS:', show.temporaryHolds.map(h => ({ seat: h.seatNumber, user: h.userId })));
+    
+    // CHECK 1: Seats already BOOKED?
     const alreadyBooked = seats.filter(seat => (show.bookedSeats || []).includes(seat));
     if (alreadyBooked.length > 0) {
+      console.log('❌ FAILED: Seats already BOOKED:', alreadyBooked);
       return res.status(400).json({ 
         success: false, 
         message: `Seats ${alreadyBooked.join(', ')} are already booked!` 
       });
     }
     
-    // Check if seats are on hold for this user
+    // CHECK 2: Seats are on HOLD for THIS user?
     const notHeldByUser = seats.filter(seat => {
-      const hold = show.temporaryHolds.find(h => 
+      const hold = (show.temporaryHolds || []).find(h => 
         h.seatNumber === seat && h.userId === userId
       );
       return !hold;
     });
     
     if (notHeldByUser.length > 0) {
+      console.log('❌ FAILED: Seats not on hold for this user:', notHeldByUser);
       return res.status(400).json({ 
         success: false, 
-        message: `Seat hold expired for seats ${notHeldByUser.join(', ')}. Please reselect.` 
+        message: `Seat hold expired for seats ${notHeldByUser.join(', ')}. Please reselect and try again.` 
       });
     }
     
@@ -176,11 +171,13 @@ const createBooking = async (req, res) => {
     show.bookedSeats.push(...seats);
     
     // Remove holds for these seats
-    show.temporaryHolds = show.temporaryHolds.filter(
+    show.temporaryHolds = (show.temporaryHolds || []).filter(
       hold => !seats.includes(hold.seatNumber)
     );
     
     await show.save();
+    console.log('✅ SUCCESS: Booking created! Seats:', seats);
+    console.log('==========================================\n');
     
     const booking = await Booking.create({
       userId,
@@ -190,12 +187,17 @@ const createBooking = async (req, res) => {
       bookingStatus: 'confirmed'
     });
     
-    console.log('✅ Booking created:', booking._id);
+    const populatedBooking = await Booking.findById(booking._id)
+      .populate('userId', 'name email')
+      .populate({
+        path: 'showId',
+        populate: { path: 'movieId' }
+      });
     
     res.status(201).json({
       success: true,
       message: 'Tickets booked successfully!',
-      booking: booking
+      booking: populatedBooking
     });
     
   } catch (error) {
@@ -205,6 +207,7 @@ const createBooking = async (req, res) => {
 };
 
 // Get my bookings
+// Get my bookings
 const getMyBookings = async (req, res) => {
   try {
     const bookings = await Booking.find({ userId: req.user.id, bookingStatus: 'confirmed' })
@@ -213,10 +216,11 @@ const getMyBookings = async (req, res) => {
         populate: { path: 'movieId' }
       })
       .sort({ createdAt: -1 });
+    
     res.json({ success: true, data: bookings });
   } catch (error) {
     console.error('Get my bookings error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Server error', data: [] });
   }
 };
 
